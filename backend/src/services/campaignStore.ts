@@ -1,7 +1,13 @@
+import type { Statement } from 'better-sqlite3';
 import { getDb, initDb } from './db';
 import { getCampaignHistory, recordEvent, BlockchainMetadata } from './eventHistory';
 import { createNotification } from './notificationService';
 import { dispatchWebhook } from './webhookService';
+
+let getCampaignPledgedAmountStmt: Statement | undefined;
+let addPledgeInsertStmt: Statement | undefined;
+let updateCampaignPledgedAmountStmt: Statement | undefined;
+let reconcileOnChainPledgeInsertStmt: Statement | undefined;
 
 export type CampaignStatus = 'open' | 'funded' | 'claimed' | 'failed';
 
@@ -233,15 +239,18 @@ export function getPledgeByTransactionHash(transactionHash: string): PledgeRecor
   return row ? rowToPledge(row) : undefined;
 }
 
+let getContributorPledgedTotalStmt: any;
+
 export function getContributorPledgedTotal(campaignId: string, contributor: string): number {
   const db = getDb();
-  const row = db
-    .prepare(
+  if (!getContributorPledgedTotalStmt) {
+    getContributorPledgedTotalStmt = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) AS total
        FROM pledges
        WHERE campaign_id = ? AND contributor = ? AND refunded_at IS NULL`,
-    )
-    .get(campaignId, contributor) as { total: number };
+    );
+  }
+  const row = getContributorPledgedTotalStmt.get(campaignId, contributor) as { total: number };
 
   return row.total;
 }
@@ -1028,9 +1037,10 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
     }
 
     // Re-check campaign funding cap within transaction
-    const currentPledgedAmount = db
-      .prepare(`SELECT pledged_amount FROM campaigns WHERE id = ?`)
-      .get(campaignId) as { pledged_amount: number };
+    if (!getCampaignPledgedAmountStmt) {
+      getCampaignPledgedAmountStmt = db.prepare(`SELECT pledged_amount FROM campaigns WHERE id = ?`);
+    }
+    const currentPledgedAmount = getCampaignPledgedAmountStmt.get(campaignId) as { pledged_amount: number };
     const nextPledgedAmount = round(currentPledgedAmount.pledged_amount + roundedAmount);
     if (nextPledgedAmount > campaign.targetAmount) {
       throw toServiceError(
@@ -1040,15 +1050,18 @@ export function addPledge(campaignId: string, input: PledgeInput): CampaignRecor
       );
     }
 
-    db.prepare(
-      `INSERT INTO pledges (campaign_id, contributor, amount, asset_code, created_at, refunded_at, transaction_hash)
-       VALUES (?, ?, ?, ?, ?, NULL, NULL)`,
-    ).run(campaignId, input.contributor, roundedAmount, assetCode, createdAt);
+    if (!addPledgeInsertStmt) {
+      addPledgeInsertStmt = db.prepare(
+        `INSERT INTO pledges (campaign_id, contributor, amount, asset_code, created_at, refunded_at, transaction_hash)
+         VALUES (?, ?, ?, ?, ?, NULL, NULL)`
+      );
+    }
+    addPledgeInsertStmt.run(campaignId, input.contributor, roundedAmount, assetCode, createdAt);
 
-    db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`).run(
-      roundedAmount,
-      campaignId,
-    );
+    if (!updateCampaignPledgedAmountStmt) {
+      updateCampaignPledgedAmountStmt = db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`);
+    }
+    updateCampaignPledgedAmountStmt.run(roundedAmount, campaignId);
 
     recordEvent(
       campaignId,
@@ -1173,9 +1186,10 @@ export function reconcileOnChainPledge(
     }
 
     // Re-check campaign funding cap within transaction
-    const currentPledgedAmount = db
-      .prepare(`SELECT pledged_amount FROM campaigns WHERE id = ?`)
-      .get(campaignId) as { pledged_amount: number };
+    if (!getCampaignPledgedAmountStmt) {
+      getCampaignPledgedAmountStmt = db.prepare(`SELECT pledged_amount FROM campaigns WHERE id = ?`);
+    }
+    const currentPledgedAmount = getCampaignPledgedAmountStmt.get(campaignId) as { pledged_amount: number };
     const nextPledgedAmount = round(currentPledgedAmount.pledged_amount + roundedAmount);
     if (nextPledgedAmount > campaign.targetAmount) {
       throw toServiceError(
@@ -1184,21 +1198,23 @@ export function reconcileOnChainPledge(
         'CAMPAIGN_FUNDING_CAP_EXCEEDED',
       );
     }
-    const result = db
-      .prepare(
+
+    if (!reconcileOnChainPledgeInsertStmt) {
+      reconcileOnChainPledgeInsertStmt = db.prepare(
         `INSERT OR IGNORE INTO pledges (
           campaign_id, contributor, amount, asset_code, token_id, created_at, refunded_at, transaction_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-      )
-      .run(
-        campaignId,
-        input.contributor,
-        roundedAmount,
-        assetCode,
-        tokenId,
-        createdAt,
-        input.transactionHash,
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`
       );
+    }
+    const result = reconcileOnChainPledgeInsertStmt.run(
+      campaignId,
+      input.contributor,
+      roundedAmount,
+      assetCode,
+      tokenId,
+      createdAt,
+      input.transactionHash,
+    );
 
     if (result.changes === 0) {
       const duplicatePledge = getPledgeByTransactionHash(input.transactionHash);
@@ -1221,10 +1237,10 @@ export function reconcileOnChainPledge(
       return false;
     }
 
-    db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`).run(
-      roundedAmount,
-      campaignId,
-    );
+    if (!updateCampaignPledgedAmountStmt) {
+      updateCampaignPledgedAmountStmt = db.prepare(`UPDATE campaigns SET pledged_amount = pledged_amount + ? WHERE id = ?`);
+    }
+    updateCampaignPledgedAmountStmt.run(roundedAmount, campaignId);
 
     recordEvent(
       campaignId,
