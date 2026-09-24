@@ -30,12 +30,16 @@ export function searchCampaigns(campaigns: Campaign[], searchQuery: string): Cam
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   return campaigns.filter((campaign) => {
-    // Match if any field matches (short-circuits to avoid unnecessary .toLowerCase() calls)
-    return (
-      campaign.title.toLowerCase().includes(normalizedQuery) ||
-      campaign.creator.toLowerCase().includes(normalizedQuery) ||
-      campaign.id.toLowerCase().includes(normalizedQuery)
-    );
+    // Check title (partial match)
+    if (campaign.title.toLowerCase().includes(normalizedQuery)) return true;
+
+    // Check creator address (case-insensitive)
+    if (campaign.creator.toLowerCase().includes(normalizedQuery)) return true;
+
+    // Check campaign ID (partial match, case-insensitive)
+    if (campaign.id.toLowerCase().includes(normalizedQuery)) return true;
+
+    return false;
   });
 }
 
