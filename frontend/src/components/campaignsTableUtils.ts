@@ -30,17 +30,12 @@ export function searchCampaigns(campaigns: Campaign[], searchQuery: string): Cam
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   return campaigns.filter((campaign) => {
-    // Check title (partial match)
-    const titleMatches = campaign.title.toLowerCase().includes(normalizedQuery);
-
-    // Check creator address (case-insensitive)
-    const creatorMatches = campaign.creator.toLowerCase().includes(normalizedQuery);
-
-    // Check campaign ID (partial match, case-insensitive)
-    const idMatches = campaign.id.toLowerCase().includes(normalizedQuery);
-
-    // Match if any field matches
-    return titleMatches || creatorMatches || idMatches;
+    // Match if any field matches (short-circuits to avoid unnecessary .toLowerCase() calls)
+    return (
+      campaign.title.toLowerCase().includes(normalizedQuery) ||
+      campaign.creator.toLowerCase().includes(normalizedQuery) ||
+      campaign.id.toLowerCase().includes(normalizedQuery)
+    );
   });
 }
 
@@ -70,9 +65,14 @@ export function applyFilters(campaigns: Campaign[], assetCode: string, status: s
  *
  * @param campaigns - Array of campaigns to sort
  * @param sortBy - Sort option (createdAt, deadline, pledgedAmount, targetAmount)
+ * @param order - Sort order ('asc' or 'desc')
  * @returns Sorted array of campaigns
  */
-export function sortCampaigns(campaigns: Campaign[], sortBy: SortOption): Campaign[] {
+export function sortCampaigns(
+  campaigns: Campaign[],
+  sortBy: SortOption,
+  order: 'asc' | 'desc' = 'desc'
+): Campaign[] {
   // Create a copy to avoid mutating the original array
   const sorted = [...campaigns];
 
@@ -81,31 +81,22 @@ export function sortCampaigns(campaigns: Campaign[], sortBy: SortOption): Campai
 
     switch (sortBy) {
       case 'createdAt':
-        // Sort by createdAt descending (newest first)
         comparison = b.createdAt - a.createdAt;
         break;
-
       case 'deadline':
-        // Sort by deadline ascending (nearest deadline first)
         comparison = a.deadline - b.deadline;
         break;
-
       case 'pledgedAmount':
-        // Sort by pledgedAmount descending (largest first)
         comparison = b.pledgedAmount - a.pledgedAmount;
         break;
-
       case 'targetAmount':
-        // Sort by targetAmount descending (largest first)
         comparison = b.targetAmount - a.targetAmount;
         break;
-
       default:
-        // No sorting for unknown options
         comparison = 0;
     }
 
-    return comparison;
+    return order === 'asc' ? -comparison : comparison;
   });
 
   return sorted;

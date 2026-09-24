@@ -196,8 +196,8 @@ export function CampaignsTable({
     // Then apply search query client-side (title / creator / id).
     const searched = searchCampaigns(assetStatusFiltered, debouncedSearchQuery);
     // Server already sorted; client sort acts as a stable tie-break.
-    return sortCampaigns(searched, sortBy);
-  }, [campaigns, assetCode, statusFilter, debouncedSearchQuery, sortBy]);
+    return sortCampaigns(searched, sortBy, urlOrder);
+  }, [campaigns, assetCode, statusFilter, debouncedSearchQuery, sortBy, urlOrder]);
 
   const isMobile = useMediaQuery('(max-width: 767px)');
 
