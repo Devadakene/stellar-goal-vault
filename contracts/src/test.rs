@@ -2906,4 +2906,70 @@ mod tests {
         client.initialize(&admin, &100_i128);
         client.set_fee(&admin, &(-1_i128));
     }
+
+    #[test]
+    #[should_panic(expected = "fee must not exceed 10000 basis points")]
+    fn test_set_fee_rejects_above_10000_bps() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let client = deploy_contract(&env);
+        client.initialize(&admin, &100_i128);
+        client.set_fee(&admin, &10_001_i128);
+    }
+
+    #[test]
+    fn test_set_fee_rejection_does_not_mutate_state() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let client = deploy_contract(&env);
+        client.initialize(&admin, &100_i128);
+
+        assert_eq!(client.get_platform_fee_bps(), 50);
+
+        let result = crate::std::panic::catch_unwind(crate::std::panic::AssertUnwindSafe(|| {
+            client.set_fee(&admin, &(-100_i128));
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.get_platform_fee_bps(), 50);
+
+        let result_over = crate::std::panic::catch_unwind(crate::std::panic::AssertUnwindSafe(|| {
+            client.set_fee(&admin, &15_000_i128);
+        }));
+        assert!(result_over.is_err());
+        assert_eq!(client.get_platform_fee_bps(), 50);
+    }
+
+    #[test]
+    #[should_panic(expected = "fee recipient cannot be the vault contract")]
+    fn test_set_fee_recipient_rejects_vault_address() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let client = deploy_contract(&env);
+        client.initialize(&admin, &100_i128);
+        client.set_fee_recipient(&admin, &client.address);
+    }
+
+    #[test]
+    fn test_set_fee_recipient_rejection_does_not_mutate_state() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let client = deploy_contract(&env);
+        client.initialize(&admin, &100_i128);
+
+        assert!(client.get_fee_recipient().is_none());
+
+        let result = crate::std::panic::catch_unwind(crate::std::panic::AssertUnwindSafe(|| {
+            client.set_fee_recipient(&admin, &client.address);
+        }));
+        assert!(result.is_err());
+        assert!(client.get_fee_recipient().is_none());
+    }
 }
