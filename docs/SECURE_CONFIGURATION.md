@@ -112,6 +112,13 @@ local-development override.
 - **Risk of weakening:** high limits or disabling the middleware allows repeated
   mutations to consume backend and database resources.
 
+### Request input handling and payload limits (`MAX_BODY_SIZE`)
+
+- **Safe production default:** `16kb` (or conservative bounds tailored to expected payload size, e.g. `1mb` for file/metadata uploads). Configured via `MAX_BODY_SIZE`.
+- **Local development:** defaults to `16kb` if unset.
+- **Risk of weakening:** allowing unvalidated, unbounded, or excessively large request bodies exposes the backend server to Denial of Service (DoS) attacks via memory exhaustion and CPU resource starvation. Request bodies sent as unexpected content types or oversized payloads are rejected early.
+
+
 ### Secret material (`SECRET_KEY`, `SERVER_PRIVATE_KEY`)
 
 - **Safe production default:** a long random value injected via the platform's
