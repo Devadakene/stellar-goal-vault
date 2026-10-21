@@ -366,7 +366,10 @@ fn claim(env: Env, campaign_id: u64, creator: Address)
 | Underfunded | `"campaign is not funded"` | Medium | `pledged_amount < target_amount`; contributors should use `refund()` |
 | Caller not authorized | Soroban auth failure | High | Ensure `creator` signs the transaction |
 
-**Emits:** `CampaignClaimed` (one per token with a non-zero balance)
+**Emits:** `CampaignClaimed` (one per token with a non-zero balance), and
+`FeeCollected` for each token whose fee transfer is positive. `CampaignClaimed.amount`
+is the gross campaign balance claimed for that token, before any fee split.
+Failed calls commit no claim or fee success events.
 
 **Gas estimate:** 20,000 + 15,000 per accepted token (transfer + storage) ≈ base 20,000 + 15,000 per token + 20% headroom: **42,000** (1 token) / **102,000** (5 tokens)
 
@@ -786,7 +789,33 @@ All events use the topic prefix `(symbol_short!("Goal"), ...)`.
 | `token` | `Address` | Token claimed |
 | `amount` | `i128` | Amount claimed |
 
-**Emitted by:** `claim` (one per token with balance)
+**Emitted by:** `claim` (one per token with a non-zero balance, after successful
+transfers and campaign balance clearing). `amount` is the gross amount removed
+from campaign accounting; when a fee applies, `FeeCollected` describes the fee
+portion of this amount. The event contains no contributor-specific data.
+
+---
+
+### `FeeCollected`
+
+| Topic | Type | Value |
+|-------|------|-------|
+| 0 | `symbol` | `"Goal"` |
+| 1 | `symbol` | `"Fee"` |
+
+**Data** (`FeeCollected`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign_id` | `u64` | Campaign ID |
+| `token` | `Address` | Token from which the fee was collected |
+| `fee_amount` | `i128` | Positive fee transferred to the recipient |
+| `fee_recipient` | `Address` | Address receiving the fee |
+
+**Emitted by:** `claim`, once per token only when a fee recipient is configured
+and the calculated fee is greater than zero. No event is emitted for zero fees,
+or when no fee recipient is configured. As with `CampaignClaimed`, the event is
+committed only if the full claim transaction succeeds.
 
 ---
 

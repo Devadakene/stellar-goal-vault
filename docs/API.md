@@ -69,12 +69,30 @@ Basic liveness check. Returns service status and a lightweight database reachabi
 - `database.status` is `"up"` or `"down"` based on a lightweight SQLite reachability check.
 - `indexer` exposes the last successful update and freshness/lag for the background event indexer.
 - Returns `503` when the service is degraded.
+- Unexpected failures return the standard error envelope `{ "success": false, "error": { "code": string, "message": string, "requestId": string } }` (status `500`) while logging internal details securely.
 
 ---
 
 ### `GET /api/health/deep`
 
 Extended health check that probes the database, Soroban RPC, and the configured contract.
+
+The `components` collection is paginated deterministically in a fixed order
+(`db`, `soroban`, `contract`, `indexer`).
+
+**Query parameters:**
+
+| Parameter | Type    | Description                                                     |
+|-----------|---------|-----------------------------------------------------------------|
+| `page`    | integer | 1-based page number. Defaults to `1`.                           |
+| `limit`   | integer | Components per page, 1–100. Defaults to `20`.                   |
+
+Pagination defaults to returning the full collection: the default `limit` of 20
+exceeds the number of components, so omitting both parameters preserves the
+pre-pagination response. Invalid or out-of-range values (for example `page=0`,
+`limit=0`, `limit=101`, or non-integers) are rejected with `400 Bad Request`
+rather than clamped. Navigation metadata is returned under `pagination`:
+`total`, `page`, `limit`, `totalPages`, `hasPreviousPage`, and `hasNextPage`.
 
 **Response `200 OK`:**
 
@@ -97,11 +115,22 @@ Extended health check that probes the database, Soroban RPC, and the configured 
         "lagMs": 1500
       }
     }
+  },
+  "pagination": {
+    "total": 4,
+    "page": 1,
+    "limit": 20,
+    "totalPages": 1,
+    "hasPreviousPage": false,
+    "hasNextPage": false
   }
 }
 ```
 
-Returns `503` when `overall` is `"down"`.
+Returns `503` when `overall` is `"down"`. Invalid pagination parameters return `400 Bad Request`
+with the standard error envelope. Unexpected failures return the standard error envelope
+`{ "success": false, "error": { "code": string, "message": string, "requestId": string } }`
+(status `500`) while logging structured context securely without exposing sensitive internals.
 
 ---
 
@@ -227,7 +256,7 @@ reports `MISS` for a fresh read and `HIT` for a cached one; cached payloads are 
 
 **Response `400 Bad Request`** for a malformed ID, **`404 Not Found`** when the campaign does
 not exist, and **`500`** with a generic error body (no storage or stack details) when the
-underlying read fails.
+underlying read fails. Known error paths return the standard error envelope `{ "success": false, "error": { "code": string, "message": string, "requestId": string, "details"?: array } }` while unexpected failures log structured context without leaking internals.
 
 ---
 

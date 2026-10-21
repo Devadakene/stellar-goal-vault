@@ -78,6 +78,7 @@ import {
   parseCampaignListQuery,
   normalizeQueryValue,
   parseContributorPledgesQuery,
+  parseHealthPaginationQuery,
 } from './validation/schemas';
 import { generateOpenApiDocument } from './openapi';
 import { logError, logInfo, logger, summarizeSecretConfig } from './logger';
@@ -368,50 +369,76 @@ export function filterCampaignList(
   });
 }
 
-app.get('/api/health', (_req: Request, res: Response) => {
-  const start = process.hrtime();
-  const database = checkDbHealth();
-  const indexer = getIndexerStatus();
-
-  // Operators distinguish healthy-but-idle from stale/failing via indexer.freshness.
-  // Degrade when DB is down or indexer is stale/failing (isHealthy already encodes this).
-  const healthy = database.reachable && indexer.isHealthy;
-
-  const end = process.hrtime(start);
-  const latencyMs = Number(((end[0] * 1e9 + end[1]) / 1e6).toFixed(3));
-
-  logInfo('health_check', {
-    operation: 'health_check_shallow',
-    outcome: healthy ? 'success' : 'failure',
-    latency_ms: latencyMs,
-    db_reachable: database.reachable,
-    indexer_healthy: indexer.isHealthy,
-    indexer_freshness: indexer.freshness,
-    indexer_lag_ms: indexer.lagMs,
-  });
-
-  const memUsage = process.memoryUsage();
-  const memory = {
-    rss: memUsage.rss,
-    heapUsed: memUsage.heapUsed,
-    heapTotal: memUsage.heapTotal,
-    external: memUsage.external,
-  };
-
-  res.status(healthy ? 200 : 503).json({
-    service: 'stellar-goal-vault-backend',
-    status: healthy ? 'ok' : 'degraded',
-    timestamp: new Date().toISOString(),
-    uptimeSeconds: Number(process.uptime().toFixed(3)),
-    database,
-    indexer,
-    memory,
-  });
-});
-
-app.get('/api/health/deep', applyRateLimit(1000), async (_req: Request, res: Response) => {
+app.get('/api/health', (req: Request, res: Response, next: express.NextFunction) => {
   const start = process.hrtime();
   try {
+    const database = checkDbHealth();
+    const indexer = getIndexerStatus();
+
+    // Operators distinguish healthy-but-idle from stale/failing via indexer.freshness.
+    // Degrade when DB is down or indexer is stale/failing (isHealthy already encodes this).
+    const healthy = database.reachable && indexer.isHealthy;
+
+    const end = process.hrtime(start);
+    const latencyMs = Number(((end[0] * 1e9 + end[1]) / 1e6).toFixed(3));
+
+    logInfo('health_check', {
+      operation: 'health_check_shallow',
+      outcome: healthy ? 'success' : 'failure',
+      latency_ms: latencyMs,
+      db_reachable: database.reachable,
+      indexer_healthy: indexer.isHealthy,
+      indexer_freshness: indexer.freshness,
+      indexer_lag_ms: indexer.lagMs,
+    });
+
+    const memUsage = process.memoryUsage();
+    const memory = {
+      rss: memUsage.rss,
+      heapUsed: memUsage.heapUsed,
+      heapTotal: memUsage.heapTotal,
+      external: memUsage.external,
+    };
+
+    res.status(healthy ? 200 : 503).json({
+      service: 'stellar-goal-vault-backend',
+      status: healthy ? 'ok' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Number(process.uptime().toFixed(3)),
+      database,
+      indexer,
+      memory,
+    });
+  } catch (error) {
+    const end = process.hrtime(start);
+    const latencyMs = Number(((end[0] * 1e9 + end[1]) / 1e6).toFixed(3));
+    logError(error, {
+      event: 'health_check_error',
+      operation: 'health_check_shallow',
+      outcome: 'failure',
+      latency_ms: latencyMs,
+      requestId: (req as RequestWithId).requestId,
+    });
+    return next(error);
+  }
+});
+
+app.get('/api/health/deep', applyRateLimit(1000), async (req: Request, res: Response, next: express.NextFunction) => {
+  const start = process.hrtime();
+  try {
+    // The deep response exposes an ordered `components` collection, so it
+    // supports bounded pagination via page/limit (defaults 1 / 20, limit capped
+    // at 100). Invalid values are rejected with 400 rather than silently
+    // clamped. The default limit exceeds the number of components, so a request
+    // without parameters returns every component exactly as before.
+    const paginationResult = parseHealthPaginationQuery({
+      page: req.query.page,
+      limit: req.query.limit,
+    });
+    if (!paginationResult.ok) {
+      sendValidationError(paginationResult.issues);
+    }
+
     const database = checkDbHealth();
     const hasContractId = !!config.contractId;
     let sorobanHealthy = false;
@@ -461,30 +488,47 @@ app.get('/api/health/deep', applyRateLimit(1000), async (_req: Request, res: Res
       external: memUsage.external,
     };
 
+    // Canonical, stable component order so a slice is deterministic across
+    // pages: page 1 + page 2 cover the set exactly once with no overlap.
+    const allComponents: Record<string, { status: 'up' | 'down'; details: unknown }> = {
+      db: {
+        status: database.reachable ? 'up' : 'down',
+        details: database.reachable ? 'SQLite database reachable' : database.error,
+      },
+      soroban: {
+        status: sorobanHealthy ? 'up' : 'down',
+        details: config.sorobanRpcUrl ? 'Soroban RPC reachable' : 'Soroban RPC URL not configured',
+      },
+      contract: {
+        status: hasContractId ? 'up' : 'down',
+        details: hasContractId ? 'CONTRACT_ID configured' : 'CONTRACT_ID not set',
+      },
+      indexer: {
+        status: indexer.isHealthy ? 'up' : 'down',
+        details: indexer,
+      },
+    };
+
+    const componentNames = Object.keys(allComponents);
+    const total = componentNames.length;
+    const { page, limit } = paginationResult;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const pageNames = componentNames.slice((page - 1) * limit, (page - 1) * limit + limit);
+    const components = Object.fromEntries(pageNames.map((name) => [name, allComponents[name]]));
+
     res.status(allHealthy ? 200 : 503).json({
       overall: allHealthy ? 'up' : 'down',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Number(process.uptime().toFixed(3)),
       memory,
-      components: {
-        db: {
-          status: database.reachable ? 'up' : 'down',
-          details: database.reachable ? 'SQLite database reachable' : database.error,
-        },
-        soroban: {
-          status: sorobanHealthy ? 'up' : 'down',
-          details: config.sorobanRpcUrl
-            ? 'Soroban RPC reachable'
-            : 'Soroban RPC URL not configured',
-        },
-        contract: {
-          status: hasContractId ? 'up' : 'down',
-          details: hasContractId ? 'CONTRACT_ID configured' : 'CONTRACT_ID not set',
-        },
-        indexer: {
-          status: indexer.isHealthy ? 'up' : 'down',
-          details: indexer,
-        },
+      components,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasPreviousPage: page > 1 && total > 0,
+        hasNextPage: page < totalPages,
       },
     });
   } catch (error) {
@@ -495,13 +539,9 @@ app.get('/api/health/deep', applyRateLimit(1000), async (_req: Request, res: Res
       operation: 'health_check_deep',
       outcome: 'failure',
       latency_ms: latencyMs,
+      requestId: (req as RequestWithId).requestId,
     });
-    res.status(503).json({
-      overall: 'down',
-      timestamp: new Date().toISOString(),
-      error: 'Deep health check failed',
-      message: error instanceof Error ? error.message : String(error),
-    });
+    return next(error);
   }
 });
 
@@ -785,6 +825,7 @@ app.get('/api/campaigns/:id/pledges', (req: Request, res: Response, next: expres
 
 app.post(
   '/api/campaigns',
+  applyRateLimit(WRITE_RATE_LIMIT_MAX_REQUESTS),
   validateBody(createCampaignPayloadSchema),
   async (req: Request, res: Response, next: express.NextFunction) => {
     try {
